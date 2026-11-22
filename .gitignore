@@ -1,0 +1,16 @@
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Runtime: base de datos y sesión de WhatsApp
+data/
+auth/
+
+# Variables de entorno
+.env*
+!.env.example
+
+.DS_Store
+npm-debug.log*
