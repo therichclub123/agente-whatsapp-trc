@@ -18,6 +18,16 @@ const LOCK_FILE = path.resolve(process.cwd(), "data", "bot.lock");
 
 // ---------- Candado: un solo proceso bot por sesión ----------
 // Dos bots con la misma carpeta ./auth se pisan en WhatsApp y la sesión termina en 401.
+//
+// El candado guarda "pid:timestamp" y se refresca cada pocos segundos mientras el
+// bot corre. Si el candado tiene más de LOCK_STALE_MS sin refrescarse, se asume
+// abandonado (el proceso murió sin poder limpiarlo, p. ej. un crash o un redeploy
+// que mató el contenedor) y se ignora, aunque el PID por coincidencia exista en
+// el contenedor nuevo (los PID se reinician en cada contenedor y un número viejo
+// puede coincidir con un proceso real sin relación).
+
+const LOCK_STALE_MS = 10_000;
+const LOCK_REFRESH_MS = 3_000;
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -28,22 +38,31 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
+function writeLock(): void {
+  fs.writeFileSync(LOCK_FILE, `${process.pid}:${Date.now()}`);
+}
+
 function acquireLock(): void {
   fs.mkdirSync(path.dirname(LOCK_FILE), { recursive: true });
   if (fs.existsSync(LOCK_FILE)) {
-    const pid = Number(fs.readFileSync(LOCK_FILE, "utf-8").trim());
-    if (pid && pid !== process.pid && isProcessAlive(pid)) {
+    const [pidRaw, tsRaw] = fs.readFileSync(LOCK_FILE, "utf-8").trim().split(":");
+    const pid = Number(pidRaw);
+    const ts = Number(tsRaw);
+    const stale = !ts || Date.now() - ts > LOCK_STALE_MS;
+    if (pid && pid !== process.pid && !stale && isProcessAlive(pid)) {
       console.error(
         `[bot] Ya hay otro bot corriendo (PID ${pid}). Dos bots con la misma sesión hacen que ` +
           `WhatsApp la cierre (401). Detén el otro proceso antes de iniciar este.`
       );
       process.exit(1);
     }
+    if (stale) console.log(`[bot] Candado viejo (PID ${pid}) sin refrescar: lo tomo como abandonado.`);
   }
-  fs.writeFileSync(LOCK_FILE, String(process.pid));
+  writeLock();
+  setInterval(writeLock, LOCK_REFRESH_MS);
   process.on("exit", () => {
     try {
-      if (fs.readFileSync(LOCK_FILE, "utf-8").trim() === String(process.pid)) fs.unlinkSync(LOCK_FILE);
+      if (fs.readFileSync(LOCK_FILE, "utf-8").trim().split(":")[0] === String(process.pid)) fs.unlinkSync(LOCK_FILE);
     } catch {}
   });
 }
