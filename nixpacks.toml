@@ -4,7 +4,7 @@ providers = ["node"]
 NIXPACKS_NODE_VERSION = "22"
 
 [phases.setup]
-nixPkgs = ["nodejs_22", "npm-10_x", "python3", "gcc", "gnumake"]
+nixPkgs = ["nodejs_22", "npm-10_x", "python3", "gcc", "gnumake", "procps"]
 
 [phases.install]
 cmds = ["npm ci --include=dev"]
