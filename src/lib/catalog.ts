@@ -26,7 +26,7 @@ const drive = (id: string) => `https://lh3.googleusercontent.com/d/${id}`;
 export const PRODUCTS: Product[] = [
   {
     id: "rl-basico",
-    nombre: "Ralph Lauren Polo Básico Slimfit",
+    nombre: "Polo Ralph Lauren Polo Básico Slimfit",
     precio: 99,
     precioNormal: 199,
     stock: {
@@ -66,7 +66,7 @@ export const PRODUCTS: Product[] = [
   },
   {
     id: "rl-camisero",
-    nombre: "Ralph Lauren Camisero Slimfit",
+    nombre: "Polo Ralph Lauren Camisero Slimfit",
     precio: 189,
     precioNormal: 399,
     stock: {
@@ -82,7 +82,7 @@ export const PRODUCTS: Product[] = [
   },
   {
     id: "rl-camisero-europeo",
-    nombre: "Ralph Lauren Camisero Slimfit estilo europeo",
+    nombre: "Polo Ralph Lauren Camisero Slimfit estilo europeo",
     precio: 189,
     precioNormal: 399,
     stock: { Beige: "M (2)" },
