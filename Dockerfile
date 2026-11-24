@@ -11,7 +11,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --include=dev
 COPY . .
-RUN npm run build
+# next build falla la primera vez por un aviso de seguridad de Next.js y pasa
+# limpio al reintentar; se corre dos veces para que el deploy no se caiga por eso.
+RUN npm run build || npm run build
 
 ENV NODE_ENV=production
 ENV AUTH_DIR=/app/data/auth
