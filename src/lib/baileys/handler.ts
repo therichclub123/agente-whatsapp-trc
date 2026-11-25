@@ -7,9 +7,9 @@ import {
   insertMessage,
 } from "../db";
 import { generateReply } from "../openrouter";
-import { addPhoto, historyText, parseReply, photoId, photosFor } from "../reply";
-import { asksForPhoto, mentionedItems } from "../stock-check";
-import { CATALOGO_URL } from "../catalog";
+import { historyText, parseReply } from "../reply";
+import { asksForPhoto, mentionedBrands, mentionedPrenda, mentionedTalla } from "../stock-check";
+import { categoryIdFor, photosFor, CATALOGO_URL, type Talla } from "../catalog";
 import { sendImage, sendText, simulateTyping } from "./client";
 
 /**
@@ -125,39 +125,74 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   console.log(`[bot] LLM respondió en ${Date.now() - startedAt}ms`);
 
   const parsed = parseReply(reply);
-  ensurePhotos(parsed, history);
-  // Red de seguridad anti-spam: nunca remandar una foto (prenda+color) que ya se mandó en esta conversación,
-  // aunque el LLM se equivoque y la vuelva a poner en su [FOTOS: ...] — salvo que el cliente la
-  // esté pidiendo de nuevo explícitamente en su último mensaje (ahí sí se permite repetirla).
-  const lastUserText = [...history].reverse().find((m) => m.role === "user")?.content ?? "";
-  if (!asksForPhoto(lastUserText)) {
-    const alreadySent = alreadySentPhotoIds(history);
-    parsed.photos = parsed.photos.filter((p) => !alreadySent.has(photoId(p)));
-  }
-  // Red de seguridad de 3 filtros: el LLM a veces manda fotos (casi siempre Ralph Lauren) sin que
-  // el cliente haya dicho prenda, marca o talla. Si falta cualquiera de las 3, se bloquean las
-  // fotos y se pregunta lo que falte, en vez de confiar en que el prompt baste.
-  if (parsed.photos.length) {
-    const userTexts = history.filter((m) => m.role === "user").map((m) => m.content);
-    const prenda = mentionedPrenda(userTexts);
-    const brand = mentionedBrand(userTexts);
-    const talla = mentionedTalla(userTexts);
-    if (!prenda || !brand || !talla) {
-      parsed.photos = [];
-      parsed.messages = [
-        !prenda
-          ? "¿Buscas polo o camisero? 👕"
-          : !brand
-            ? "¿Qué marca buscas, Ralph, Boss o Lacoste? 👀"
-            : "¿Qué talla usas, para ver qué hay? 📏",
-      ];
+  const userTexts = history.filter((m) => m.role === "user").map((m) => m.content);
+  const lastUserText = userTexts[userTexts.length - 1] ?? "";
+
+  ensureLanding(parsed, lastUserText);
+
+  // ---------- Fotos: el código decide solo, el LLM no las maneja ----------
+  // Si el cliente nombra 2 marcas (ej. "Ralph Lauren" y después "Boss" para comparar),
+  // se mandan las fotos de las 2 — no solo de la última que mencionó.
+  const brands = mentionedBrands(userTexts);
+  const prenda = mentionedPrenda(userTexts);
+  const talla = mentionedTalla(userTexts) as Talla | null;
+  const alreadySent = alreadySentCombos(history);
+  const wantsRepeat = asksForPhoto(lastUserText);
+
+  let photosToSend: ReturnType<typeof photosFor> = [];
+  const newCombos: string[] = [];
+  let hadGap = false;
+
+  if (prenda && talla) {
+    for (const brand of brands) {
+      // Si no hay fotos del tipo exacto que pidió (ej. "camisero") pero la marca sí tiene
+      // del otro tipo en esa talla (ej. "polo"), se manda ese — así responde Fabox en la
+      // vida real: nunca deja al cliente sin nada si la marca sí tiene algo en su talla.
+      const otherPrenda: typeof prenda | null = prenda === "polo" ? "camisero" : prenda === "camisero" ? "polo" : null;
+      const candidates: (typeof prenda)[] = otherPrenda ? [prenda, otherPrenda] : [prenda];
+
+      let sentSomethingForBrand = false;
+      for (const p of candidates) {
+        const categoryId = categoryIdFor(brand, p);
+        if (!categoryId) continue;
+        const comboKey = `${categoryId}:${talla}`;
+        if (alreadySent.has(comboKey) && !wantsRepeat) {
+          // Ya se mandó esta combinación antes: no hace falta mandar nada más para esta
+          // marca (y tampoco hay que probar el otro tipo de prenda como respaldo).
+          sentSomethingForBrand = true;
+          break;
+        }
+        const photos = photosFor(talla, categoryId);
+        if (photos.length) {
+          photosToSend.push(...photos);
+          newCombos.push(comboKey);
+          sentSomethingForBrand = true;
+          break; // ya encontró algo que mandar para esta marca, no hace falta seguir probando
+        }
+        // Esta prenda específica no tiene fotos: sigue al siguiente candidato (el otro tipo).
+      }
+      if (!sentSomethingForBrand) {
+        // Ni el tipo pedido ni el otro tienen foto en esta talla para esta marca: hueco real
+        // (ej. tallas como XS, o la marca de verdad no tiene nada en esa talla) — se marca,
+        // nunca se inventa que sí hay.
+        hadGap = true;
+      }
     }
   }
-  if (!parsed.messages.length && !parsed.photos.length) {
+
+  if (hadGap && !photosToSend.length) {
+    // Ninguna de las marcas pedidas tiene foto: Fabox lo revisa a mano antes de seguir.
+    parsed.messages = ["Déjame revisar si realmente tenemos esa talla y color que pides bro 🙏"];
+    parsed.handoff = "verificar";
+  }
+
+  if (!parsed.messages.length && !photosToSend.length) {
     console.warn(`[bot] Respuesta vacía tras limpiar: "${reply}"`);
     return;
   }
-  insertMessage(convo.id, "assistant", historyText(parsed));
+
+  const sentNote = newCombos.length ? `\n[Fotos enviadas: ${newCombos.join(", ")}]` : "";
+  insertMessage(convo.id, "assistant", historyText(parsed) + sentNote);
 
   // Mensajes cortos con "escribiendo…" entre uno y otro, como una persona
   for (const text of parsed.messages) {
@@ -166,58 +201,32 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
     console.log(`[bot] → Enviado a ${phone}: "${text}"`);
   }
   // Ninguna foto lleva texto: así WhatsApp las agrupa en un solo mensaje de álbum
-  // en vez de mandarlas una por una. El precio y las tallas los dice el bot en su texto.
-  for (const p of parsed.photos) {
+  // en vez de mandarlas una por una. El precio lo dice el bot en su texto (ver priceHint).
+  for (const p of photosToSend) {
     try {
-      for (const url of p.urls) await sendImage(sock, jid, url, "");
-      console.log(`[bot] → Foto enviada a ${phone}: ${p.product.id} ${p.color}`);
+      await sendImage(sock, jid, p.url, "");
+      console.log(`[bot] → Foto enviada a ${phone}: ${p.title}`);
     } catch (err) {
-      console.error(`[bot] No se pudo enviar la foto ${p.product.id} ${p.color}:`, err);
+      console.error(`[bot] No se pudo enviar la foto ${p.title}:`, err);
     }
   }
 
-  // Pedido cerrado o pidió asesor: el bot deja de responder y Fabox lo ve en el dashboard en modo HUMAN
+  // Pedido cerrado, pidió asesor, o hay que verificar stock a mano: el bot deja de
+  // responder y Fabox lo ve en el dashboard en modo HUMAN.
   if (parsed.handoff) {
     setMode(convo.id, "HUMAN");
-    const why = parsed.handoff === "pedido" ? "🛒 PEDIDO CERRADO — verifica el pago y despacha" : "🙋 Pidió un asesor";
+    const why =
+      parsed.handoff === "pedido"
+        ? "🛒 PEDIDO CERRADO — verifica el pago y despacha"
+        : parsed.handoff === "verificar"
+          ? "🔍 VERIFICAR STOCK — confirma si hay y retómalo tú mismo"
+          : "🙋 Pidió un asesor";
     console.log(`[bot] ${why}: ${msg.pushName ?? phone} (${phone}). Conversación ${convo.id} pasada a modo HUMAN.`);
   }
 }
 
-const PRENDA_PATTERNS: [RegExp, string][] = [
-  [/\bcamiser/i, "camisero"],
-  [/\bpolo/i, "polo"],
-];
-
-/** Busca si el cliente ya dijo qué tipo de prenda quiere (polo o camisero). */
-function mentionedPrenda(userTexts: string[]): string | null {
-  const joined = userTexts.join(" ");
-  for (const [re, name] of PRENDA_PATTERNS) if (re.test(joined)) return name;
-  return null;
-}
-
-const BRAND_PATTERNS: [RegExp, string][] = [
-  [/\b(ralph|lauren|rl)\b/i, "Polo Ralph Lauren"],
-  [/\bboss\b/i, "Boss"],
-  [/\blacoste\b/i, "Lacoste"],
-];
-
-/** Busca si el cliente ya nombró una marca en alguno de sus mensajes. */
-function mentionedBrand(userTexts: string[]): string | null {
-  const joined = userTexts.join(" ");
-  for (const [re, name] of BRAND_PATTERNS) if (re.test(joined)) return name;
-  return null;
-}
-
-const TALLA_PATTERN = /\b(xs|s|m|l|xl|xxl)\b/i;
-
-/** Busca si el cliente ya dio una talla (S/M/L/XL) en alguno de sus mensajes. */
-function mentionedTalla(userTexts: string[]): boolean {
-  return userTexts.some((t) => TALLA_PATTERN.test(t));
-}
-
-/** IDs de fotos (prenda+color) que ya se mandaron antes en esta conversación, leídos del "[Fotos enviadas: ...]" del historial. */
-function alreadySentPhotoIds(history: { role: string; content: string }[]): Set<string> {
+/** IDs de combos "categoria:talla" ya enviados antes en esta conversación. */
+function alreadySentCombos(history: { role: string; content: string }[]): Set<string> {
   const ids = new Set<string>();
   for (const m of history) {
     if (m.role !== "assistant") continue;
@@ -228,32 +237,10 @@ function alreadySentPhotoIds(history: { role: string; content: string }[]): Set<
   return ids;
 }
 
-/**
- * Red de seguridad para las fotos (el LLM a veces no las manda o dice que "no puede"):
- * - si el cliente pide foto, se manda la de la prenda/color del que viene hablando;
- * - si en su último mensaje nombra una prenda concreta (ya sabe lo que quiere) y aún no se le mandó su foto, se manda.
- */
-export function ensurePhotos(parsed: ReturnType<typeof parseReply>, history: { role: string; content: string }[]): void {
-  const userTexts = history.filter((m) => m.role === "user").map((m) => m.content);
-  const last = userTexts[userTexts.length - 1] ?? "";
-  const sent = history.filter((m) => m.role === "assistant").map((m) => m.content).join("\n");
-
-  const items = asksForPhoto(last)
-    ? parsed.photos.length ? [] : mentionedItems(userTexts.slice(-4))
-    : mentionedItems([last]).filter(({ product }) => !sent.includes(product.id));
-  for (const { product, color } of items) {
-    for (const photo of photosFor(color ? `${product.id} ${color}` : product.id)) addPhoto(parsed.photos, photo);
-  }
-  ensureLanding(parsed, last);
-  if (!parsed.photos.length) return;
-  parsed.messages = parsed.messages.filter((t) => !/no (puedo|podemos|tengo como) (enviar|mandar|pasar)/i.test(t));
-  if (!parsed.messages.length) parsed.messages = ["Mira bro, aquí te va 👇"];
-}
-
 /** Si el cliente no sabe qué quiere ("qué tienes", "el catálogo") y no se le mandó ni link ni fotos, se agrega el link. */
 function ensureLanding(parsed: ReturnType<typeof parseReply>, last: string): void {
-  if (parsed.photos.length || parsed.messages.some((t) => t.includes("therichclub.online"))) return;
-  const t = last.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (parsed.messages.some((t) => t.includes("therichclub.online"))) return;
+  const t = last.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   if (!/\b(que (tienes|tienen|hay|venden|modelos)|catalogo|modelos|que ropa|todo lo que)\b/.test(t)) return;
   const i = Math.max(parsed.messages.length - 1, 0);
   parsed.messages[i] = `Mira todo lo que tenemos aquí 👇\n${CATALOGO_URL}\n${parsed.messages[i] ?? ""}`.trim();

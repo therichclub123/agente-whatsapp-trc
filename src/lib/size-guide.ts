@@ -39,8 +39,6 @@ CÓMO MEDIRSE (según Polo Ralph Lauren)
 - Cintura: a la altura del ombligo, con la cinta pegada al cuerpo.
 `.trim();
 
-import { PRODUCTS } from "./catalog";
-
 // ---------- Cálculo exacto de talla (el LLM se equivoca leyendo rangos) ----------
 
 type Brand = "Ralph Lauren" | "BOSS / HUGO";
@@ -80,37 +78,6 @@ function recommend(fit: Fit, cm: number): string {
   return `${size}; ${small} si le gusta entallado o ${big} si lo quiere más suelto`;
 }
 
-function sizesInStock(stock: Record<string, string>): string[] {
-  const sizes = new Set<string>();
-  for (const tallas of Object.values(stock))
-    for (const m of tallas.matchAll(/\b(XXL|XL|XS|S|M|L)\b/g)) sizes.add(m[1]);
-  return [...sizes];
-}
-
-/** Talla(s) que se le recomienda para un corte: la exacta, o las de los extremos si cae entre dos. */
-function recommendedSizes(fit: Fit, cm: number): string[] {
-  const size = sizeFor(fit === "rl-slim" ? "Ralph Lauren" : "BOSS / HUGO", cm);
-  const between = size.match(/^entre (\S+) y (\S+)$/);
-  if (!between) return [size];
-  return fit === "regular-stretch" ? [between[1], between[2]] : [between[2]];
-}
-
-/** Por cada prenda de RL/Boss/Hugo: ¿hay en stock la talla que le corresponde? Dicho explícito para el LLM. */
-function stockCheck(cm: number): string {
-  const fitOf = (id: string): Fit | null =>
-    id.startsWith("rl-") ? "rl-slim" : id.startsWith("boss-") || id.startsWith("hugo-") ? "regular-stretch" : null;
-  return PRODUCTS.flatMap((p) => {
-    const fit = fitOf(p.id);
-    if (!fit) return [];
-    const inStock = sizesInStock(p.stock);
-    const wanted = recommendedSizes(fit, cm);
-    const ok = wanted.filter((t) => inStock.includes(t));
-    return ok.length
-      ? [`${p.nombre}: SÍ hay ${ok.join(" y ")}`]
-      : [`${p.nombre}: NO HAY ${wanted.join(" ni ")} (solo ${inStock.join(", ") || "agotado"}) → dile que esa talla está agotada y ofrécele otra prenda`];
-  }).join(" | ");
-}
-
 /** Busca una medida de pecho (60–150 cm) en el texto del cliente: "mido 104 de pecho", "104cm", "pecho 98". */
 export function extractChestCm(text: string): number | null {
   const t = text.toLowerCase();
@@ -134,8 +101,7 @@ export function sizeHint(recentUserTexts: string[]): string | null {
       `DATO CALCULADO (úsalo tal cual, no recalcules): el cliente mide ${cm} cm de pecho. ` +
       `Polo Ralph Lauren Slim Fit → ${recommend("rl-slim", cm)}. ` +
       `Boss Regular Fit → ${recommend("regular-stretch", cm)}. ` +
-      `Responde con la talla de la marca que está viendo. ` +
-      `Stock de su talla: ${stockCheck(cm)}. Si para la prenda que está viendo dice NO HAY, díselo sí o sí.`
+      `Responde con la talla de la marca que está viendo.`
     );
   }
   return null;

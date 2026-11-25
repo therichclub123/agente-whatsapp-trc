@@ -2,7 +2,26 @@ import OpenAI from "openai";
 import type { Message } from "./db";
 import { SYSTEM_PROMPT } from "./system-prompt";
 import { sizeHint } from "./size-guide";
-import { stockHint } from "./stock-check";
+import { mentionedBrand, mentionedPrenda } from "./stock-check";
+import { categoryIdFor, findCategory } from "./catalog";
+
+/**
+ * Precio exacto de lo que el cliente ya mencionó (marca + prenda), para que el LLM nunca
+ * invente un número. null si todavía no dijo ambas cosas.
+ */
+function priceHint(userTexts: string[]): string | null {
+  const brand = mentionedBrand(userTexts);
+  const prenda = mentionedPrenda(userTexts);
+  if (!brand || !prenda) return null;
+  const categoryId = categoryIdFor(brand, prenda);
+  const category = categoryId ? findCategory(categoryId) : undefined;
+  if (!category) return null;
+  return (
+    `PRECIO EXACTO (úsalo tal cual, no inventes otro): ${category.nombre} — S/ ${category.precio}` +
+    (category.precioNormal ? ` (antes S/ ${category.precioNormal})` : "") +
+    "."
+  );
+}
 
 // Se leen al cargar el módulo: en el proceso bot, scripts/env-loader.ts debe importarse antes
 const API_KEY = process.env.OPENROUTER_API_KEY;
@@ -27,9 +46,9 @@ const client = new OpenAI({
  */
 /** Lo que más se le olvida al modelo; va al final para que pese más. */
 const REMINDER =
-  'RECORDATORIO: termina con UNA pregunta de opciones (A o B), que NO se pueda responder con "sí" o "no". ' +
-  'Mal: "¿Te lo separo?", "¿Te va ese?", "¿Lo quieres?". Bien: "¿Te lo separo en M o en L?", "¿Es para Lima o provincia?". ' +
-  'Si el cliente no sabe qué quiere, manda el link de la landing. Si ya nombró marca, prenda o color, manda las fotos con [FOTOS: …], no la landing.';
+  "RECORDATORIO: no escribas tú las fotos ni ningún tag de corchetes para mandarlas — el sistema las manda solo " +
+  "apenas sepa prenda, marca y talla. Tu trabajo es solo conversar y, si ya tienes esos 3 datos, mencionar el " +
+  "precio exacto (viene en una nota del sistema) y seguir la venta. Si el cliente no sabe qué quiere, manda el link de la landing.";
 
 export async function generateReply(history: Message[]): Promise<string> {
   if (!API_KEY || API_KEY.startsWith("sk-or-...")) {
@@ -39,12 +58,12 @@ export async function generateReply(history: Message[]): Promise<string> {
   // Talla calculada por código a partir de la medida que dio el cliente (últimos 6 mensajes)
   const userTexts = history.filter((m) => m.role === "user").map((m) => m.content);
   const hint = sizeHint(userTexts.slice(-6));
-  // Stock exacto de las prendas que mencionó el cliente (últimos 4 mensajes)
-  const stock = stockHint(userTexts.slice(-4));
+  // Precio exacto de lo que el cliente ya mencionó (últimos 4 mensajes)
+  const price = priceHint(userTexts.slice(-4));
 
   const completion = await client.chat.completions.create({
     model: MODEL,
-    // Tope duro para que no mande testamentos: el prompt pide máx. 30 palabras
+    // Tope duro para que no mande testamentos: el prompt pide máx. 30 palabras.
     max_tokens: 160,
     temperature: 0.7,
     messages: [
@@ -54,7 +73,7 @@ export async function generateReply(history: Message[]): Promise<string> {
         content: m.content,
       })),
       ...(hint ? [{ role: "system" as const, content: hint }] : []),
-      ...(stock ? [{ role: "system" as const, content: stock }] : []),
+      ...(price ? [{ role: "system" as const, content: price }] : []),
       { role: "system" as const, content: REMINDER },
     ],
   });
