@@ -85,10 +85,4 @@ export function historyText({ messages, photos }: ParsedReply): string {
   return messages.join("\n\n") + note;
 }
 
-const photoId = (f: Photo) => (Object.keys(f.product.fotos).length > 1 ? `${f.product.id} ${f.color}` : f.product.id);
-
-export function photoCaption({ product: p, color }: Photo): string {
-  const tallas = (p.stock[color] ?? "").replace(/\s*\(\d+\)/g, "");
-  const nombre = p.nombre.toLowerCase().includes(color.split(" ")[0].toLowerCase()) ? p.nombre : `${p.nombre} ${color}`;
-  return `${nombre} · S/ ${p.precio} (antes S/ ${p.precioNormal})${tallas ? ` · Tallas ${tallas}` : ""}`;
-}
+export const photoId = (f: Photo) => (Object.keys(f.product.fotos).length > 1 ? `${f.product.id} ${f.color}` : f.product.id);
