@@ -143,7 +143,15 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   const newCombos: string[] = [];
   let hadGap = false;
 
-  if (prenda && talla) {
+  // Red de seguridad anti-alucinación: si falta marca o talla, el código corta la respuesta
+  // del LLM y pregunta directo lo que falta — nunca se deja que el LLM improvise un precio
+  // o un "ya te mando las fotos" cuando en realidad no hay ninguna marca/talla resuelta
+  // todavía (así se coló el bug de mandar los precios de las 4 marcas juntas).
+  if (prenda && !brands.length) {
+    parsed.messages = ["¿Qué marca te interesa, Ralph, Boss, Lacoste o Psycho Bunny? 👀"];
+  } else if (prenda && brands.length && !talla) {
+    parsed.messages = ["¿Qué talla usas, S, M, L o XL? 📏"];
+  } else if (prenda && talla) {
     for (const brand of brands) {
       // Si no hay fotos del tipo exacto que pidió (ej. "camisero") pero la marca sí tiene
       // del otro tipo en esa talla (ej. "polo"), se manda ese — así responde Fabox en la
