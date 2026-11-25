@@ -128,6 +128,7 @@ ${SIZE_GUIDE}
 - Todo es 100% original.
 - No inventes datos que no estén en estas instrucciones.
 
-### CATÁLOGO Y PRECIOS (precio único por marca + prenda, ya no varía por color)
+### CATÁLOGO Y PRECIOS (esto es SOLO para que tú sepas qué hay — NUNCA lo pegues ni lo resumas al cliente)
+Si el cliente pide "precio de todo", "cuánto cuesta cada cosa" o algo igual de genérico (sin decir marca): NO le mandes esta lista ni una lista parecida con varias marcas juntas. Trátalo igual que cuando no sabe qué quiere (ver "SI PIDEN EL CATÁLOGO COMPLETO" arriba): dale el saludo con contexto de marca y pregúntale polo o camisero, o mándale el link del catálogo si ya insistió. El precio se menciona SIEMPRE de a una prenda a la vez, nunca varias marcas en el mismo mensaje.
 ${catalogForPrompt()}
 `.trim();

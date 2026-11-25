@@ -48,7 +48,9 @@ const client = new OpenAI({
 const REMINDER =
   "RECORDATORIO: no escribas tú las fotos ni ningún tag de corchetes para mandarlas — el sistema las manda solo " +
   "apenas sepa prenda, marca y talla. Tu trabajo es solo conversar y, si ya tienes esos 3 datos, mencionar el " +
-  "precio exacto (viene en una nota del sistema) y seguir la venta. Si el cliente no sabe qué quiere, manda el link de la landing.";
+  "precio exacto (viene en una nota del sistema) y seguir la venta. Si el cliente no sabe qué quiere, manda el link de la landing. " +
+  "NUNCA pegues la lista de categorías/precios del catálogo ni resumas varias marcas juntas en un mensaje — " +
+  "un precio es siempre de UNA sola prenda a la vez, la que ya confirmó marca+prenda.";
 
 export async function generateReply(history: Message[]): Promise<string> {
   if (!API_KEY || API_KEY.startsWith("sk-or-...")) {
