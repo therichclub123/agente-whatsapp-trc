@@ -138,10 +138,16 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
     await sendText(sock, jid, text);
     console.log(`[bot] → Enviado a ${phone}: "${text}"`);
   }
+  // Si se mandan varios colores de la MISMA prenda, el precio/tallas ya se dijo una vez:
+  // solo se repite el nombre completo con precio en la primera prenda de cada producto distinto.
+  const captionedProducts = new Set<string>();
   for (const p of parsed.photos) {
     try {
-      // La primera (prenda sola) lleva nombre, precio y tallas; la segunda (con modelo) va sin texto
-      for (const [i, url] of p.urls.entries()) await sendImage(sock, jid, url, i === 0 ? photoCaption(p) : "");
+      const isFirstOfProduct = !captionedProducts.has(p.product.id);
+      captionedProducts.add(p.product.id);
+      const caption = isFirstOfProduct ? photoCaption(p) : p.color;
+      // La primera (prenda sola) lleva el texto; la segunda (con modelo) va sin texto
+      for (const [i, url] of p.urls.entries()) await sendImage(sock, jid, url, i === 0 ? caption : "");
       console.log(`[bot] → Foto enviada a ${phone}: ${p.product.id} ${p.color}`);
     } catch (err) {
       console.error(`[bot] No se pudo enviar la foto ${p.product.id} ${p.color}:`, err);
