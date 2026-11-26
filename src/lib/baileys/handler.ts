@@ -133,7 +133,12 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   // ---------- Fotos: el código decide solo, el LLM no las maneja ----------
   // Si el cliente nombra 2 marcas (ej. "Ralph Lauren" y después "Boss" para comparar),
   // se mandan las fotos de las 2 — no solo de la última que mencionó.
-  const brands = mentionedBrands(userTexts);
+  // "Todas"/"todos" (el cliente quiere ver las 4 marcas) cuenta como si las hubiera nombrado.
+  const wantsAllBrands = /\b(todas|todos|cualquiera|cualquier marca|las 4|las cuatro)\b/i.test(
+    lastUserText.normalize("NFD").replace(/[̀-ͯ]/g, "")
+  );
+  const ALL_BRANDS = ["Polo Ralph Lauren", "Boss", "Lacoste", "Psycho Bunny"];
+  const brands = wantsAllBrands ? ALL_BRANDS : mentionedBrands(userTexts);
   const prenda = mentionedPrenda(userTexts);
   const talla = mentionedTalla(userTexts) as Talla | null;
   const alreadySent = alreadySentCombos(history);
@@ -143,14 +148,30 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   const newCombos: string[] = [];
   let hadGap = false;
 
+  const ASK_MARCA = "¿Qué marca te interesa, Ralph, Boss, Lacoste o Psycho Bunny? 👀";
+  const ASK_TALLA = "¿Qué talla usas, S, M, L o XL? 📏";
+  // Última respuesta del bot (sin la nota de fotos enviadas) — para no repetir la misma
+  // pregunta en loop si el cliente contesta algo que tampoco se puede resolver.
+  const lastBotText = [...history].reverse().find((m) => m.role === "assistant")?.content.split("\n[Fotos enviadas:")[0];
+  const alreadyAskedSameThing = lastBotText === ASK_MARCA || lastBotText === ASK_TALLA;
+
   // Red de seguridad anti-alucinación: si falta marca o talla, el código corta la respuesta
   // del LLM y pregunta directo lo que falta — nunca se deja que el LLM improvise un precio
   // o un "ya te mando las fotos" cuando en realidad no hay ninguna marca/talla resuelta
   // todavía (así se coló el bug de mandar los precios de las 4 marcas juntas).
-  if (prenda && !brands.length) {
-    parsed.messages = ["¿Qué marca te interesa, Ralph, Boss, Lacoste o Psycho Bunny? 👀"];
+  // Si ya se preguntó lo mismo la vez pasada y el cliente otra vez contestó algo que no
+  // se pudo resolver, no se repite una tercera vez — se deriva a Fabox (así se coló el
+  // bug de mandar la misma pregunta 4 veces seguidas).
+  if (prenda && !brands.length && alreadyAskedSameThing) {
+    parsed.messages = ["Déjame revisar esto contigo directo, bro 🙏"];
+    parsed.handoff = "verificar";
+  } else if (prenda && brands.length && !talla && alreadyAskedSameThing) {
+    parsed.messages = ["Déjame revisar esto contigo directo, bro 🙏"];
+    parsed.handoff = "verificar";
+  } else if (prenda && !brands.length) {
+    parsed.messages = [ASK_MARCA];
   } else if (prenda && brands.length && !talla) {
-    parsed.messages = ["¿Qué talla usas, S, M, L o XL? 📏"];
+    parsed.messages = [ASK_TALLA];
   } else if (prenda && talla) {
     for (const brand of brands) {
       // Si no hay fotos del tipo exacto que pidió (ej. "camisero") pero la marca sí tiene
