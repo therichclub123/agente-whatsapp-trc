@@ -8,7 +8,7 @@ import {
 } from "../db";
 import { generateReply } from "../openrouter";
 import { historyText, parseReply } from "../reply";
-import { asksForPhoto, mentionedBrands, mentionedPrenda, mentionedTalla } from "../stock-check";
+import { asksForPhoto, mentionedBrands, mentionedPrendas, mentionedTalla } from "../stock-check";
 import { categoryIdFor, photosFor, CATALOGO_URL, type Talla } from "../catalog";
 import { sendImage, sendText, simulateTyping } from "./client";
 
@@ -132,14 +132,13 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
 
   // ---------- Fotos: el código decide solo, el LLM no las maneja ----------
   // Si el cliente nombra 2 marcas (ej. "Ralph Lauren" y después "Boss" para comparar),
-  // se mandan las fotos de las 2 — no solo de la última que mencionó.
-  // "Todas"/"todos" (el cliente quiere ver las 4 marcas) cuenta como si las hubiera nombrado.
-  const wantsAllBrands = /\b(todas|todos|cualquiera|cualquier marca|las 4|las cuatro)\b/i.test(
-    lastUserText.normalize("NFD").replace(/[̀-ͯ]/g, "")
-  );
-  const ALL_BRANDS = ["Polo Ralph Lauren", "Boss", "Lacoste", "Psycho Bunny"];
-  const brands = wantsAllBrands ? ALL_BRANDS : mentionedBrands(userTexts);
-  const prenda = mentionedPrenda(userTexts);
+  // se mandan las fotos de las 2 — no solo de la última que mencionó. "Todas" se recuerda
+  // para el resto de la conversación (ver mentionedBrands), no solo el mensaje donde se dijo.
+  const brands = mentionedBrands(userTexts);
+  // Normalmente una sola prenda, pero si contestó "ambos"/"los dos" son las dos — hay que
+  // mandar fotos de polo Y camisero, no quedarse sin saber qué prenda es (eso desactivaba
+  // todo el sistema y dejaba al LLM improvisar solo).
+  const prendas = mentionedPrendas(userTexts);
   const talla = mentionedTalla(userTexts) as Talla | null;
   // Qué fotos (por título, no por categoría) ya se mandaron ANTES en esta conversación —
   // la regla es "nunca la misma foto dos veces", a nivel de archivo individual, no de
@@ -169,42 +168,46 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   // Si la pregunta que tocaría mandar es IDÉNTICA a la de la vez pasada (el cliente contestó
   // algo que no resolvió nada), no se repite una tercera vez — se deriva a Fabox (así se
   // coló el bug de mandar la misma pregunta 4 veces seguidas).
-  if (prenda && nextAsk && wouldRepeatSameQuestion) {
+  if (prendas.length && nextAsk && wouldRepeatSameQuestion) {
     parsed.messages = ["Déjame revisar esto contigo directo, bro 🙏"];
     parsed.handoff = "verificar";
-  } else if (prenda && nextAsk) {
+  } else if (prendas.length && nextAsk) {
     parsed.messages = [nextAsk];
-  } else if (prenda && talla) {
-    for (const brand of brands) {
-      // Si no hay fotos del tipo exacto que pidió (ej. "camisero") pero la marca sí tiene
-      // del otro tipo en esa talla (ej. "polo"), se manda ese — así responde Fabox en la
-      // vida real: nunca deja al cliente sin nada si la marca sí tiene algo en su talla.
-      const otherPrenda: typeof prenda | null = prenda === "polo" ? "camisero" : prenda === "camisero" ? "polo" : null;
-      const candidates: (typeof prenda)[] = otherPrenda ? [prenda, otherPrenda] : [prenda];
+  } else if (prendas.length && talla) {
+    for (const prenda of prendas) {
+      for (const brand of brands) {
+        // Si pidió solo un tipo (no "ambos") y no hay fotos de ese tipo exacto pero la
+        // marca sí tiene del otro tipo en esa talla, se manda ese — así responde Fabox en
+        // la vida real: nunca deja al cliente sin nada si la marca sí tiene algo en su
+        // talla. Si pidió "ambos" explícito, no se usa este respaldo — se intenta cada uno.
+        const otherPrenda: typeof prenda | null =
+          prendas.length > 1 ? null : prenda === "polo" ? "camisero" : prenda === "camisero" ? "polo" : null;
+        const candidates: (typeof prenda)[] = otherPrenda ? [prenda, otherPrenda] : [prenda];
 
-      let sentSomethingForBrand = false;
-      for (const p of candidates) {
-        const categoryId = categoryIdFor(brand, p);
-        if (!categoryId) continue;
-        const photos = photosFor(talla, categoryId);
-        if (!photos.length) continue; // esta prenda no tiene nada: prueba el otro candidato
+        let sentSomethingForCombo = false;
+        for (const p of candidates) {
+          const categoryId = categoryIdFor(brand, p);
+          if (!categoryId) continue;
+          const photos = photosFor(talla, categoryId);
+          if (!photos.length) continue; // esta prenda no tiene nada: prueba el otro candidato
 
-        const freshPhotos = photos.filter((photo) => wantsRepeat || !alreadySentTitles.has(photo.title));
-        if (freshPhotos.length) {
-          photosToSend.push(...freshPhotos);
-          newTitles.push(...freshPhotos.map((photo) => photo.title));
+          const freshPhotos = photos.filter((photo) => wantsRepeat || !alreadySentTitles.has(photo.title));
+          if (freshPhotos.length) {
+            photosToSend.push(...freshPhotos);
+            newTitles.push(...freshPhotos.map((photo) => photo.title));
+          }
+          // Ya sea que hubiera fotos nuevas o que ya se hubieran mandado todas antes, esta
+          // combinación queda cubierta — no es un hueco de stock, así que no se prueba el
+          // otro candidato ni se deriva a Fabox.
+          sentSomethingForCombo = true;
+          break;
         }
-        // Ya sea que hubiera fotos nuevas o que ya se hubieran mandado todas antes, esta
-        // marca queda cubierta — no es un hueco de stock, así que no se prueba el otro
-        // candidato ni se deriva a Fabox.
-        sentSomethingForBrand = true;
-        break;
-      }
-      if (!sentSomethingForBrand) {
-        // Ni el tipo pedido ni el otro tienen foto en esta talla para esta marca: hueco real
-        // (ej. tallas como XS, o la marca de verdad no tiene nada en esa talla) — se marca,
-        // nunca se inventa que sí hay.
-        hadGap = true;
+        if (!sentSomethingForCombo) {
+          // Ni el tipo pedido ni el otro tienen foto en esta talla para esta marca: hueco
+          // real (ej. tallas como XS, o la marca de verdad no tiene nada en esa talla) —
+          // se marca, nunca se inventa que sí hay.
+          hadGap = true;
+        }
       }
     }
   }
