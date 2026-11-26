@@ -169,7 +169,7 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   // algo que no resolvió nada), no se repite una tercera vez — se deriva a Fabox (así se
   // coló el bug de mandar la misma pregunta 4 veces seguidas).
   if (prendas.length && nextAsk && wouldRepeatSameQuestion) {
-    parsed.messages = ["Déjame revisar esto contigo directo, bro 🙏"];
+    parsed.messages = ["Déjame llamar a mi encargado para que resuelva directo tu duda, bro 🙏"];
     parsed.handoff = "verificar";
   } else if (prendas.length && nextAsk) {
     parsed.messages = [nextAsk];
@@ -214,7 +214,7 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
 
   if (hadGap && !photosToSend.length) {
     // Ninguna de las marcas pedidas tiene foto: Fabox lo revisa a mano antes de seguir.
-    parsed.messages = ["Déjame revisar si realmente tenemos esa talla y color que pides bro 🙏"];
+    parsed.messages = ["Voy a hablar con mi encargado para que responda directo tu duda, bro 🙏"];
     parsed.handoff = "verificar";
   }
 
