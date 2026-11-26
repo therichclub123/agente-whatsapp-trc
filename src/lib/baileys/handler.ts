@@ -141,11 +141,15 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   const brands = wantsAllBrands ? ALL_BRANDS : mentionedBrands(userTexts);
   const prenda = mentionedPrenda(userTexts);
   const talla = mentionedTalla(userTexts) as Talla | null;
-  const alreadySent = alreadySentCombos(history);
+  // Qué fotos (por título, no por categoría) ya se mandaron ANTES en esta conversación —
+  // la regla es "nunca la misma foto dos veces", a nivel de archivo individual, no de
+  // categoría: si la categoría cambia de alguna forma entre turnos pero la foto es la
+  // misma imagen, igual no se vuelve a mandar.
+  const alreadySentTitles = alreadySentPhotoTitles(history);
   const wantsRepeat = asksForPhoto(lastUserText);
 
   let photosToSend: ReturnType<typeof photosFor> = [];
-  const newCombos: string[] = [];
+  const newTitles: string[] = [];
   let hadGap = false;
 
   const ASK_MARCA = "¿Qué marca te interesa, Ralph, Boss, Lacoste o Psycho Bunny? 👀";
@@ -182,21 +186,19 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
       for (const p of candidates) {
         const categoryId = categoryIdFor(brand, p);
         if (!categoryId) continue;
-        const comboKey = `${categoryId}:${talla}`;
-        if (alreadySent.has(comboKey) && !wantsRepeat) {
-          // Ya se mandó esta combinación antes: no hace falta mandar nada más para esta
-          // marca (y tampoco hay que probar el otro tipo de prenda como respaldo).
-          sentSomethingForBrand = true;
-          break;
-        }
         const photos = photosFor(talla, categoryId);
-        if (photos.length) {
-          photosToSend.push(...photos);
-          newCombos.push(comboKey);
-          sentSomethingForBrand = true;
-          break; // ya encontró algo que mandar para esta marca, no hace falta seguir probando
+        if (!photos.length) continue; // esta prenda no tiene nada: prueba el otro candidato
+
+        const freshPhotos = photos.filter((photo) => wantsRepeat || !alreadySentTitles.has(photo.title));
+        if (freshPhotos.length) {
+          photosToSend.push(...freshPhotos);
+          newTitles.push(...freshPhotos.map((photo) => photo.title));
         }
-        // Esta prenda específica no tiene fotos: sigue al siguiente candidato (el otro tipo).
+        // Ya sea que hubiera fotos nuevas o que ya se hubieran mandado todas antes, esta
+        // marca queda cubierta — no es un hueco de stock, así que no se prueba el otro
+        // candidato ni se deriva a Fabox.
+        sentSomethingForBrand = true;
+        break;
       }
       if (!sentSomethingForBrand) {
         // Ni el tipo pedido ni el otro tienen foto en esta talla para esta marca: hueco real
@@ -218,7 +220,7 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
     return;
   }
 
-  const sentNote = newCombos.length ? `\n[Fotos enviadas: ${newCombos.join(", ")}]` : "";
+  const sentNote = newTitles.length ? `\n[Fotos enviadas: ${newTitles.join(" || ")}]` : "";
   insertMessage(convo.id, "assistant", historyText(parsed) + sentNote);
 
   // Mensajes cortos con "escribiendo…" entre uno y otro, como una persona
@@ -252,16 +254,16 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
   }
 }
 
-/** IDs de combos "categoria:talla" ya enviados antes en esta conversación. */
-function alreadySentCombos(history: { role: string; content: string }[]): Set<string> {
-  const ids = new Set<string>();
+/** Títulos de foto (archivo individual) ya enviados antes en esta conversación. */
+function alreadySentPhotoTitles(history: { role: string; content: string }[]): Set<string> {
+  const titles = new Set<string>();
   for (const m of history) {
     if (m.role !== "assistant") continue;
     const match = m.content.match(/\[Fotos enviadas: ([^\]]*)\]/);
     if (!match) continue;
-    for (const id of match[1].split(",")) ids.add(id.trim());
+    for (const title of match[1].split("||")) titles.add(title.trim());
   }
-  return ids;
+  return titles;
 }
 
 /** Si el cliente no sabe qué quiere ("qué tienes", "el catálogo") y no se le mandó ni link ni fotos, se agrega el link. */
