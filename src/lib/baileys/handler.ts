@@ -150,28 +150,26 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
 
   const ASK_MARCA = "¿Qué marca te interesa, Ralph, Boss, Lacoste o Psycho Bunny? 👀";
   const ASK_TALLA = "¿Qué talla usas, S, M, L o XL? 📏";
-  // Última respuesta del bot (sin la nota de fotos enviadas) — para no repetir la misma
-  // pregunta en loop si el cliente contesta algo que tampoco se puede resolver.
+  // Qué pregunta fija tocaría mandar ESTE turno, según lo que todavía falte.
+  const nextAsk = !brands.length ? ASK_MARCA : !talla ? ASK_TALLA : null;
+  // Última respuesta del bot (sin la nota de fotos enviadas) — solo cuenta como loop si
+  // es EXACTAMENTE la misma pregunta que se repetiría ahora (ej. ya resolvió la marca y
+  // ahora falta la talla, eso NO es repetir — es la primera vez que se pregunta la talla).
   const lastBotText = [...history].reverse().find((m) => m.role === "assistant")?.content.split("\n[Fotos enviadas:")[0];
-  const alreadyAskedSameThing = lastBotText === ASK_MARCA || lastBotText === ASK_TALLA;
+  const wouldRepeatSameQuestion = nextAsk !== null && nextAsk === lastBotText;
 
   // Red de seguridad anti-alucinación: si falta marca o talla, el código corta la respuesta
   // del LLM y pregunta directo lo que falta — nunca se deja que el LLM improvise un precio
   // o un "ya te mando las fotos" cuando en realidad no hay ninguna marca/talla resuelta
   // todavía (así se coló el bug de mandar los precios de las 4 marcas juntas).
-  // Si ya se preguntó lo mismo la vez pasada y el cliente otra vez contestó algo que no
-  // se pudo resolver, no se repite una tercera vez — se deriva a Fabox (así se coló el
-  // bug de mandar la misma pregunta 4 veces seguidas).
-  if (prenda && !brands.length && alreadyAskedSameThing) {
+  // Si la pregunta que tocaría mandar es IDÉNTICA a la de la vez pasada (el cliente contestó
+  // algo que no resolvió nada), no se repite una tercera vez — se deriva a Fabox (así se
+  // coló el bug de mandar la misma pregunta 4 veces seguidas).
+  if (prenda && nextAsk && wouldRepeatSameQuestion) {
     parsed.messages = ["Déjame revisar esto contigo directo, bro 🙏"];
     parsed.handoff = "verificar";
-  } else if (prenda && brands.length && !talla && alreadyAskedSameThing) {
-    parsed.messages = ["Déjame revisar esto contigo directo, bro 🙏"];
-    parsed.handoff = "verificar";
-  } else if (prenda && !brands.length) {
-    parsed.messages = [ASK_MARCA];
-  } else if (prenda && brands.length && !talla) {
-    parsed.messages = [ASK_TALLA];
+  } else if (prenda && nextAsk) {
+    parsed.messages = [nextAsk];
   } else if (prenda && talla) {
     for (const brand of brands) {
       // Si no hay fotos del tipo exacto que pidió (ej. "camisero") pero la marca sí tiene
