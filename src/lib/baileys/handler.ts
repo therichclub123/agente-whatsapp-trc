@@ -5,8 +5,9 @@ import {
   getOrCreateConversation,
   getRecentHistory,
   insertMessage,
+  type Message,
 } from "../db";
-import { generateReply } from "../openrouter";
+import { EmptyLLMResponseError, generateReply } from "../openrouter";
 import { historyText, parseReply } from "../reply";
 import { asksForPhoto, mentionedBrands, mentionedPrendas, mentionedTalla } from "../stock-check";
 import { categoryIdFor, photosFor, CATALOGO_URL, type Talla } from "../catalog";
@@ -119,11 +120,79 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
 
   // 8. Modo AI: generar, guardar y enviar (al mismo JID por el que escribió)
   const history = getRecentHistory(convo.id, 20);
+  const pushName = msg.pushName ?? null;
   console.log(`[bot] Llamando LLM con ${history.length} mensajes...`);
   const startedAt = Date.now();
-  const reply = await generateReply(history);
+  let reply: string;
+  try {
+    reply = await generateReply(history);
+  } catch (err) {
+    if (!(err instanceof EmptyLLMResponseError)) throw err;
+    // El LLM no respondió tras ~1 min de reintentos (ver generateReply): el cliente nunca se
+    // queda callado — se le avisa que espere y se sigue intentando solo, en segundo plano,
+    // hasta conseguir una respuesta real (nunca se deriva a HUMANO solo por esto).
+    console.error(`[bot] LLM sigue sin responder tras los reintentos (${pushName ?? phone}). Aviso y sigo en segundo plano.`);
+    await simulateTyping(sock, jid, 800);
+    await sendText(sock, jid, WAITING_MESSAGE);
+    retryInBackground(sock, jid, phone, pushName, convo.id, history);
+    return;
+  }
   console.log(`[bot] LLM respondió en ${Date.now() - startedAt}ms`);
 
+  await deliverReply(sock, jid, phone, pushName, convo.id, history, reply);
+}
+
+/** Se manda una sola vez si el LLM no responde tras ~1 min; mientras tanto sigue reintentando aparte. */
+const WAITING_MESSAGE = "Dame un momento bro, ya te resuelvo 🙏";
+
+/**
+ * El cliente ya recibió el mensaje de espera: se sigue llamando al LLM en segundo plano
+ * (cada intento ya reintenta ~1 min adentro, ver generateReply) hasta conseguir una
+ * respuesta real, sin bloquear el procesamiento de otros mensajes entrantes.
+ */
+function retryInBackground(
+  sock: WASocket,
+  jid: string,
+  phone: string,
+  pushName: string | null,
+  conversationId: number,
+  history: Message[]
+): void {
+  const MAX_BACKGROUND_ATTEMPTS = 10; // ~10 min en total (cada intento ya tarda ~1 min adentro)
+
+  (async () => {
+    for (let attempt = 1; attempt <= MAX_BACKGROUND_ATTEMPTS; attempt++) {
+      // Fabox pudo haber tomado la conversación a mano mientras esperábamos
+      const fresh = getConversationById(conversationId);
+      if (!fresh || fresh.mode !== "AI") return;
+
+      try {
+        const reply = await generateReply(history);
+        await deliverReply(sock, jid, phone, pushName, conversationId, history, reply);
+        return;
+      } catch (err) {
+        if (!(err instanceof EmptyLLMResponseError)) {
+          console.error(`[bot] Reintento en segundo plano falló para ${pushName ?? phone}:`, err);
+          return;
+        }
+        console.error(`[bot] Reintento en segundo plano ${attempt}/${MAX_BACKGROUND_ATTEMPTS} también vacío (${pushName ?? phone}).`);
+      }
+    }
+    console.error(`[bot] Se agotaron los reintentos en segundo plano para ${pushName ?? phone}; el LLM no respondió en ~10 min.`);
+  })().catch((err) => console.error(`[bot] Error inesperado reintentando en segundo plano (${pushName ?? phone}):`, err));
+}
+
+/** Convierte la respuesta cruda del LLM en mensajes/fotos y los envía. Lo usa tanto el camino normal como retryInBackground. */
+async function deliverReply(
+  sock: WASocket,
+  jid: string,
+  phone: string,
+  pushName: string | null,
+  conversationId: number,
+  history: Message[],
+  reply: string
+): Promise<void> {
+  const convo = { id: conversationId };
   const parsed = parseReply(reply);
   const userTexts = history.filter((m) => m.role === "user").map((m) => m.content);
   const lastUserText = userTexts[userTexts.length - 1] ?? "";
@@ -253,7 +322,7 @@ async function handleIncoming(sock: WASocket, msg: WAMessage, opts: IncomingOpti
         : parsed.handoff === "verificar"
           ? "🔍 VERIFICAR STOCK — confirma si hay y retómalo tú mismo"
           : "🙋 Pidió un asesor";
-    console.log(`[bot] ${why}: ${msg.pushName ?? phone} (${phone}). Conversación ${convo.id} pasada a modo HUMAN.`);
+    console.log(`[bot] ${why}: ${pushName ?? phone} (${phone}). Conversación ${convo.id} pasada a modo HUMAN.`);
   }
 }
 

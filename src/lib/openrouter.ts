@@ -52,6 +52,26 @@ const REMINDER =
   "NUNCA pegues la lista de categorías/precios del catálogo ni resumas varias marcas juntas en un mensaje — " +
   "un precio es siempre de UNA sola prenda a la vez, la que ya confirmó marca+prenda.";
 
+/**
+ * OpenRouter devolvió 200 OK pero sin contenido (típico bajo carga: el proveedor
+ * upstream se cuelga pero igual responde "éxito"). Distinto de un error real
+ * (API key inválida, sin crédito, etc.) — ese se propaga tal cual, sin reintentar,
+ * porque reintentar no lo va a arreglar.
+ */
+export class EmptyLLMResponseError extends Error {
+  constructor() {
+    super("El LLM devolvió una respuesta vacía");
+    this.name = "EmptyLLMResponseError";
+  }
+}
+
+/** Pausas entre reintentos cuando OpenRouter responde vacío (no es un 429/5xx, ya reintentado por el SDK). */
+const EMPTY_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 16000, 30000];
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 export async function generateReply(history: Message[]): Promise<string> {
   if (!API_KEY || API_KEY.startsWith("sk-or-...")) {
     throw new Error("Falta OPENROUTER_API_KEY en .env.local");
@@ -63,24 +83,38 @@ export async function generateReply(history: Message[]): Promise<string> {
   // Precio exacto de lo que el cliente ya mencionó (últimos 4 mensajes)
   const price = priceHint(userTexts.slice(-4));
 
-  const completion = await client.chat.completions.create({
-    model: MODEL,
-    // Tope duro para que no mande testamentos: el prompt pide máx. 30 palabras.
-    max_tokens: 160,
-    temperature: 0.7,
-    messages: [
-      { role: "system", content: SYSTEM_PROMPT },
-      ...history.map((m) => ({
-        role: m.role === "user" ? ("user" as const) : ("assistant" as const),
-        content: m.content,
-      })),
-      ...(hint ? [{ role: "system" as const, content: hint }] : []),
-      ...(price ? [{ role: "system" as const, content: price }] : []),
-      { role: "system" as const, content: REMINDER },
-    ],
-  });
+  const messages = [
+    { role: "system" as const, content: SYSTEM_PROMPT },
+    ...history.map((m) => ({
+      role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+      content: m.content,
+    })),
+    ...(hint ? [{ role: "system" as const, content: hint }] : []),
+    ...(price ? [{ role: "system" as const, content: price }] : []),
+    { role: "system" as const, content: REMINDER },
+  ];
 
-  const reply = completion.choices[0]?.message?.content?.trim();
-  if (!reply) throw new Error("El LLM devolvió una respuesta vacía");
-  return reply;
+  // Reintenta ~1 minuto en total antes de rendirse: casi todas las respuestas vacías
+  // son un bache momentáneo del proveedor bajo carga, no un rechazo real del modelo.
+  for (let attempt = 0; attempt <= EMPTY_RETRY_DELAYS_MS.length; attempt++) {
+    const completion = await client.chat.completions.create({
+      model: MODEL,
+      // Tope duro para que no mande testamentos: el prompt pide máx. 30 palabras.
+      max_tokens: 160,
+      temperature: 0.7,
+      messages,
+    });
+
+    const reply = completion.choices[0]?.message?.content?.trim();
+    if (reply) return reply;
+
+    if (attempt < EMPTY_RETRY_DELAYS_MS.length) {
+      console.warn(
+        `[bot] LLM devolvió respuesta vacía (intento ${attempt + 1}/${EMPTY_RETRY_DELAYS_MS.length + 1}), reintentando en ${EMPTY_RETRY_DELAYS_MS[attempt] / 1000}s...`
+      );
+      await sleep(EMPTY_RETRY_DELAYS_MS[attempt]);
+    }
+  }
+
+  throw new EmptyLLMResponseError();
 }
